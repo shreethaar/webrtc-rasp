@@ -33,16 +33,18 @@ function startCameraCapture() {
         ffmpegProcess.kill('SIGTERM');
     }
 
-    // Optimized WebM command for Pi Camera Module v2.1 with zero latency
-    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush -o - | ffmpeg -i - -c:v libvpx -b:v 1500k -crf 10 -preset ultrafast -deadline realtime -cpu-used 8 -g 30 -keyint_min 30 -fflags nobuffer -flags low_delay -f webm -`;
+    // Simplified and more compatible command
+    const command = `
+        libcamera-vid -t 0 --width 640 --height 480 --framerate 20 --inline -o - |
+        ffmpeg -i - -c:v libvpx -b:v 1M -crf 10 -preset ultrafast -deadline realtime -cpu-used 8 -f webm -
+    `;
 
-    console.log('Starting zero-latency camera capture with libcamera → ffmpeg pipeline');
+    console.log('Starting camera capture with simplified command');
 
     ffmpegProcess = spawn('bash', ['-c', command]);
 
     // Handle video data with minimal buffering
     ffmpegProcess.stdout.on('data', (data) => {
-        // Emit immediately without buffering
         io.emit('video-data', data);
     });
 
@@ -67,19 +69,22 @@ function startCameraCapture() {
         console.error('FFmpeg error:', error);
     });
 
-    console.log('Zero-latency camera capture started');
+    console.log('Camera capture started');
 }
 
-// Ultra-low latency version (I-frame only, higher bitrate)
+// Update the startUltraLowLatencyCapture function similarly
 function startUltraLowLatencyCapture() {
     if (ffmpegProcess) {
         ffmpegProcess.kill('SIGTERM');
     }
 
-    // Ultra-low latency WebM (I-frame only for absolute minimum latency)
-    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush -o - | ffmpeg -i - -c:v libvpx -b:v 2500k -crf 4 -preset ultrafast -deadline realtime -cpu-used 8 -g 1 -keyint_min 1 -fflags nobuffer -flags low_delay -f webm -`;
+    // Simplified ultra-low latency command
+    const command = `
+        libcamera-vid -t 0 --width 640 --height 480 --framerate 20 --inline -o - |
+        ffmpeg -i - -c:v libvpx -b:v 1.5M -crf 4 -preset ultrafast -deadline realtime -cpu-used 8 -g 1 -f webm -
+    `;
 
-    console.log('Starting ULTRA-low latency camera capture (I-frame only)');
+    console.log('Starting ULTRA-low latency camera capture');
 
     ffmpegProcess = spawn('bash', ['-c', command]);
 
@@ -108,7 +113,6 @@ function startUltraLowLatencyCapture() {
 
     console.log('Ultra-low latency capture started');
 }
-
 // Fallback to raspivid (legacy)
 function startRaspividCapture() {
     if (ffmpegProcess) {
