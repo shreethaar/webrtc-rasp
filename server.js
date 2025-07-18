@@ -11,7 +11,11 @@ const io = socketIo(server, {
     cors: {
         origin: "*",
         methods: ["GET", "POST"]
-    }
+    },
+    // Optimize Socket.IO for low latency
+    pingTimeout: 60000,
+    pingInterval: 25000,
+    transports: ['websocket']
 });
 
 // Serve static files
@@ -23,18 +27,59 @@ const activeConnections = new Map();
 // FFmpeg process for camera streaming
 let ffmpegProcess = null;
 
-// Start camera capture with FFmpeg and stream via WebSocket
+// Zero-latency camera capture using libcamera-vid with hardware encoding
 function startCameraCapture() {
     if (ffmpegProcess) {
         ffmpegProcess.kill('SIGTERM');
     }
 
-    const command = `
-        libcamera-vid -t 0 --width 640 --height 480 --framerate 20 --inline -o - |
-        ffmpeg -i - -c:v libvpx -b:v 1M -crf 10 -preset ultrafast -deadline realtime -cpu-used 8 -f webm -
-    `;  
+    // Optimized command for Pi Camera Module v2.1 with zero latency
+    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush --codec h264 --level 4.0 --bitrate 1500000 --intra 30 -o - | ffmpeg -i - -c:v copy -f mpegts -fflags nobuffer -flags low_delay -muxdelay 0 -`;
 
-    console.log('Starting camera capture with libcamera → ffmpeg pipeline');
+    console.log('Starting zero-latency camera capture with libcamera → ffmpeg pipeline');
+
+    ffmpegProcess = spawn('bash', ['-c', command]);
+
+    // Handle video data with minimal buffering
+    ffmpegProcess.stdout.on('data', (data) => {
+        // Emit immediately without buffering
+        io.emit('video-data', data);
+    });
+
+    ffmpegProcess.stderr.on('data', (data) => {
+        const output = data.toString();
+        if (output.includes('frame=') || output.includes('fps=')) {
+            console.log('FFmpeg status:', output.trim());
+        } else if (!output.includes('deprecated')) {
+            console.log('FFmpeg:', output);
+        }
+    });
+
+    ffmpegProcess.on('close', (code) => {
+        console.log(`FFmpeg process exited with code ${code}`);
+        if (code !== 0 && code !== null) {
+            console.error('FFmpeg crashed, attempting restart in 2 seconds...');
+            setTimeout(startCameraCapture, 2000);
+        }
+    });
+
+    ffmpegProcess.on('error', (error) => {
+        console.error('FFmpeg error:', error);
+    });
+
+    console.log('Zero-latency camera capture started');
+}
+
+// Ultra-low latency version (I-frame only, higher bitrate)
+function startUltraLowLatencyCapture() {
+    if (ffmpegProcess) {
+        ffmpegProcess.kill('SIGTERM');
+    }
+
+    // I-frame only for absolute minimum latency
+    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush --codec h264 --level 4.0 --bitrate 3000000 --intra 1 -o - | ffmpeg -i - -c:v copy -f mpegts -fflags nobuffer -flags low_delay -muxdelay 0 -muxpreload 0 -`;
+
+    console.log('Starting ULTRA-low latency camera capture (I-frame only)');
 
     ffmpegProcess = spawn('bash', ['-c', command]);
 
@@ -44,18 +89,16 @@ function startCameraCapture() {
 
     ffmpegProcess.stderr.on('data', (data) => {
         const output = data.toString();
-        if (output.includes('frame=') || output.includes('fps=')) {
-            console.log('FFmpeg status:', output.trim());
-        } else {
+        if (!output.includes('deprecated') && !output.includes('frame=')) {
             console.log('FFmpeg:', output);
         }
     });
 
     ffmpegProcess.on('close', (code) => {
-        console.log(`FFmpeg process exited with code ${code}`);
+        console.log(`Ultra-low latency FFmpeg process exited with code ${code}`);
         if (code !== 0 && code !== null) {
-            console.error('FFmpeg crashed, attempting restart in 5 seconds...');
-            setTimeout(startCameraCapture, 5000);
+            console.error('FFmpeg crashed, attempting restart in 2 seconds...');
+            setTimeout(startUltraLowLatencyCapture, 2000);
         }
     });
 
@@ -63,32 +106,30 @@ function startCameraCapture() {
         console.error('FFmpeg error:', error);
     });
 
-    console.log('Camera capture started');
+    console.log('Ultra-low latency capture started');
 }
 
-// Alternative: Use raspivid for better Pi compatibility
+// Fallback to raspivid (legacy)
 function startRaspividCapture() {
     if (ffmpegProcess) {
         ffmpegProcess.kill('SIGTERM');
     }
     
-    // Use raspivid for better Raspberry Pi compatibility
     const raspividArgs = [
         '-t', '0',           // Run indefinitely
         '-w', '640',         // Width
         '-h', '480',         // Height
-        '-fps', '20',        // Frame rate
-        '-b', '1000000',     // Bitrate
+        '-fps', '30',        // Increased frame rate
+        '-b', '2000000',     // Higher bitrate
+        '-g', '30',          // GOP size
         '-o', '-'            // Output to stdout
     ];
     
-    console.log('Starting raspivid capture...');
+    console.log('Starting raspivid capture (fallback)...');
     
     ffmpegProcess = spawn('raspivid', raspividArgs);
     
-    // Handle video data
     ffmpegProcess.stdout.on('data', (data) => {
-        // Broadcast H.264 data to all connected clients
         io.emit('video-data', data);
     });
     
@@ -99,14 +140,14 @@ function startRaspividCapture() {
     ffmpegProcess.on('close', (code) => {
         console.log(`Raspivid process exited with code ${code}`);
         if (code !== 0 && code !== null) {
-            console.error('Raspivid crashed, attempting restart in 5 seconds...');
-            setTimeout(startRaspividCapture, 5000);
+            console.error('Raspivid crashed, attempting restart in 2 seconds...');
+            setTimeout(startRaspividCapture, 2000);
         }
     });
     
     ffmpegProcess.on('error', (error) => {
         console.error('Raspivid error:', error);
-        console.log('Falling back to FFmpeg...');
+        console.log('Falling back to basic FFmpeg...');
         setTimeout(startCameraCapture, 2000);
     });
     
@@ -116,19 +157,23 @@ function startRaspividCapture() {
 // Check camera availability
 function checkCamera() {
     return new Promise((resolve, reject) => {
-        if (fs.existsSync('/dev/video0')) {
-            resolve('v4l2');
-        } else {
-            // Check if raspivid is available
-            const raspivid = spawn('which', ['raspivid']);
-            raspivid.on('close', (code) => {
-                if (code === 0) {
-                    resolve('raspivid');
-                } else {
-                    reject(new Error('No camera found'));
-                }
-            });
-        }
+        // Check for libcamera-vid first (preferred for Pi Camera Module v2.1)
+        const libcameraCheck = spawn('which', ['libcamera-vid']);
+        libcameraCheck.on('close', (code) => {
+            if (code === 0) {
+                resolve('libcamera-vid');
+            } else {
+                // Fall back to raspivid
+                const raspividCheck = spawn('which', ['raspivid']);
+                raspividCheck.on('close', (code) => {
+                    if (code === 0) {
+                        resolve('raspivid');
+                    } else {
+                        reject(new Error('No camera software found'));
+                    }
+                });
+            }
+        });
     });
 }
 
@@ -144,14 +189,18 @@ io.on('connection', (socket) => {
         clients: activeConnections.size
     });
     
-    socket.on('start-stream', () => {
+    socket.on('start-stream', (options = {}) => {
         console.log('Client requested stream start');
         if (!ffmpegProcess) {
             checkCamera().then((cameraType) => {
-                if (cameraType === 'raspivid') {
+                if (cameraType === 'libcamera-vid') {
+                    if (options.ultraLowLatency) {
+                        startUltraLowLatencyCapture();
+                    } else {
+                        startCameraCapture();
+                    }
+                } else if (cameraType === 'raspivid') {
                     startRaspividCapture();
-                } else {
-                    startCameraCapture();
                 }
             }).catch((error) => {
                 console.error('Camera check failed:', error);
@@ -186,7 +235,7 @@ app.get('/api/status', (req, res) => {
     res.json({
         streaming: ffmpegProcess !== null,
         clients: activeConnections.size,
-        camera: fs.existsSync('/dev/video0') ? 'available' : 'not found'
+        camera: fs.existsSync('/dev/video0') ? 'available' : 'checking...'
     });
 });
 
@@ -215,7 +264,8 @@ server.listen(PORT, '0.0.0.0', () => {
     
     // Check camera availability on startup
     checkCamera().then((cameraType) => {
-        console.log(`Camera detected: ${cameraType}`);
+        console.log(`Camera software detected: ${cameraType}`);
+        console.log('Ready for zero-latency streaming!');
     }).catch((error) => {
         console.warn('Camera check failed:', error.message);
         console.log('Stream will start when client connects');
