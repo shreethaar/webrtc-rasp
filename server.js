@@ -31,7 +31,7 @@ function startCameraCapture() {
 
     const command = `
         libcamera-vid -t 0 --width 640 --height 480 --framerate 20 --inline -o - |
-        ffmpeg -i - -c:v libvpx -b:v 1M -crf 10 -preset ultrafast -deadline realtime -cpu-used 8 -f webm -
+        ffmpeg -i - -c:v libx264 -preset ultrafast -tune zerolatency -f mpegts -
     `;
 
     console.log('Starting camera capture with libcamera → ffmpeg pipeline');
