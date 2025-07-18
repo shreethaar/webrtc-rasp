@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raspberry Pi WebRTC Stream</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: 0 auto;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        #remoteVideo {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        
+        .controls {
+            text-align: center;
+            margin-top: 20px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            margin: 0 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        
+        button:hover {
+            background: #0056b3;
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            text-align: center;
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status.disconnected {
+            background: #f1f3f4;
+            color: #5f6368;
+        }
+        
+        .info {
+            margin-top: 20px;
+            padding: 15px;
+            background: #e9ecef;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        .info h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        
+        .info ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        
+        .info li {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🍓 Raspberry Pi WebRTC Stream</h1>
+        
+        <div class="video-container">
+            <video id="remoteVideo" autoplay playsinline muted></video>
+        </div>
+        
+        <div class="controls">
+            <button id="startBtn">Start Stream</button>
+            <button id="stopBtn" disabled>Stop Stream</button>
+        </div>
+        
+        <div id="status" class="status disconnected">Disconnected</div>
+        
+        <div class="info">
+            <h3>📋 Instructions:</h3>
+            <ul>
+                <li>Make sure your Raspberry Pi camera is enabled</li>
+                <li>Click "Start Stream" to begin video streaming</li>
+                <li>The stream uses WebRTC for low-latency video</li>
+                <li>If you encounter issues, check the browser console for errors</li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        class WebRTCClient {
+            constructor() {
+                this.socket = io();
+                this.pc = null;
+                this.isConnected = false;
+                
+                // DOM elements
+                this.video = document.getElementById('remoteVideo');
+                this.startBtn = document.getElementById('startBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+                this.status = document.getElementById('status');
+                
+                // WebRTC configuration
+                this.rtcConfig = {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                };
+                
+                this.setupEventListeners();
+            }
+            
+            setupEventListeners() {
+                // Button event listeners
+                this.startBtn.addEventListener('click', () => this.startStream());
+                this.stopBtn.addEventListener('click', () => this.stopStream());
+                
+                // Socket event listeners
+                this.socket.on('connect', () => {
+                    console.log('Connected to server');
+                    this.updateStatus('Connected to server', 'connected');
+                });
+                
+                this.socket.on('disconnect', () => {
+                    console.log('Disconnected from server');
+                    this.updateStatus('Disconnected from server', 'disconnected');
+                    this.stopStream();
+                });
+                
+                this.socket.on('answer', (answer) => {
+                    this.handleAnswer(answer);
+                });
+                
+                this.socket.on('ice-candidate', (candidate) => {
+                    this.handleIceCandidate(candidate);
+                });
+                
+                this.socket.on('error', (error) => {
+                    console.error('Server error:', error);
+                    this.updateStatus('Error: ' + error, 'error');
+                });
+            }
+            
+            async startStream() {
+                try {
+                    this.updateStatus('Connecting...', 'connecting');
+                    this.startBtn.disabled = true;
+                    
+                    // Create peer connection
+                    this.pc = new RTCPeerConnection(this.rtcConfig);
+                    
+                    // Handle incoming stream
+                    this.pc.ontrack = (event) => {
+                        console.log('Received remote stream');
+                        this.video.srcObject = event.streams[0];
+                        this.updateStatus('Stream active', 'connected');
+                    };
+                    
+                    // Handle ICE candidates
+                    this.pc.onicecandidate = (event) => {
+                        if (event.candidate) {
+                            this.socket.emit('ice-candidate', event.candidate);
+                        }
+                    };
+                    
+                    // Handle connection state changes
+                    this.pc.onconnectionstatechange = () => {
+                        console.log('Connection state:', this.pc.connectionState);
+                        
+                        switch (this.pc.connectionState) {
+                            case 'connected':
+                                this.updateStatus('WebRTC connected', 'connected');
+                                this.isConnected = true;
+                                this.stopBtn.disabled = false;
+                                break;
+                            case 'disconnected':
+                            case 'failed':
+                                this.updateStatus('Connection failed', 'error');
+                                this.stopStream();
+                                break;
+                            case 'connecting':
+                                this.updateStatus('Establishing connection...', 'connecting');
+                                break;
+                        }
+                    };
+                    
+                    // Create offer
+                    const offer = await this.pc.createOffer({
+                        offerToReceiveVideo: true,
+                        offerToReceiveAudio: false
+                    });
+                    
+                    await this.pc.setLocalDescription(offer);
+                    this.socket.emit('offer', { offer });
+                    
+                } catch (error) {
+                    console.error('Error starting stream:', error);
+                    this.updateStatus('Failed to start stream: ' + error.message, 'error');
+                    this.startBtn.disabled = false;
+                }
+            }
+            
+            async handleAnswer(answer) {
+                try {
+                    await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+                    console.log('Remote description set');
+                } catch (error) {
+                    console.error('Error setting remote description:', error);
+                    this.updateStatus('Connection error', 'error');
+                }
+            }
+            
+            async handleIceCandidate(candidate) {
+                try {
+                    await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+                    console.log('ICE candidate added');
+                } catch (error) {
+                    console.error('Error adding ICE candidate:', error);
+                }
+            }
+            
+            stopStream() {
+                if (this.pc) {
+                    this.pc.close();
+                    this.pc = null;
+                }
+                
+                if (this.video.srcObject) {
+                    this.video.srcObject = null;
+                }
+                
+                this.isConnected = false;
+                this.startBtn.disabled = false;
+                this.stopBtn.disabled = true;
+                this.updateStatus('Disconnected', 'disconnected');
+                
+                console.log('Stream stopped');
+            }
+            
+            updateStatus(message, type) {
+                this.status.textContent = message;
+                this.status.className = `status ${type}`;
+            }
+        }
+        
+        // Initialize the WebRTC client when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new WebRTCClient();
+        });
+    </script>
+</body>
+</html>
