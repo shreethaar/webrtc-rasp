@@ -167,16 +167,12 @@
             </ul>
         </div>
     </div>
-
     <script src="/socket.io/socket.io.js"></script>
     <script>
         class ZeroLatencyStreamClient {
             constructor() {
                 this.socket = io();
                 this.isStreaming = false;
-                this.mediaSource = null;
-                this.sourceBuffer = null;
-                this.videoChunks = [];
                 this.isUltraMode = false;
                 
                 // Performance tracking
@@ -192,6 +188,13 @@
                 this.stopBtn = document.getElementById('stopBtn');
                 this.status = document.getElementById('status');
                 this.stats = document.getElementById('stats');
+                
+                // MSE setup
+                this.mediaSource = null;
+                this.sourceBuffer = null;
+                this.chunkQueue = [];
+                this.isSourceBufferUpdating = false;
+                this.initCodec = 'video/webm; codecs="vp8"';
                 
                 this.setupEventListeners();
                 this.initializeVideo();
@@ -239,10 +242,72 @@
                 this.video.playsInline = true;
                 this.video.autoplay = true;
                 
-                // Reduce buffering for lower latency
-                if (this.video.buffered) {
-                    this.video.currentTime = this.video.buffered.length > 0 ? 
-                        this.video.buffered.end(this.video.buffered.length - 1) : 0;
+                // Create MediaSource and attach to video element
+                this.setupMediaSource();
+            }
+
+            setupMediaSource() {
+                // Clean up existing MediaSource if any
+                if (this.mediaSource) {
+                    if (this.mediaSource.readyState === 'open') {
+                        this.mediaSource.endOfStream();
+                    }
+                    URL.revokeObjectURL(this.video.src);
+                }
+
+                this.mediaSource = new MediaSource();
+                this.mediaSource.addEventListener('sourceopen', this.initSourceBuffer.bind(this));
+                
+                const objectURL = URL.createObjectURL(this.mediaSource);
+                this.video.src = objectURL;
+            }
+
+            initSourceBuffer() {
+                try {
+                    // Create source buffer with proper codec
+                    this.sourceBuffer = this.mediaSource.addSourceBuffer(this.initCodec);
+                    this.sourceBuffer.mode = 'sequence';
+                    
+                    this.sourceBuffer.addEventListener('updateend', () => {
+                        this.isSourceBufferUpdating = false;
+                        this.appendFromQueue();
+                    });
+                    
+                    this.sourceBuffer.addEventListener('error', (e) => {
+                        console.error('SourceBuffer error:', e);
+                        this.isSourceBufferUpdating = false;
+                    });
+                    
+                    console.log('SourceBuffer ready');
+                    this.appendFromQueue();
+                    
+                } catch (e) {
+                    console.error('Error creating SourceBuffer:', e);
+                    // Fallback to VP9 if VP8 fails
+                    if (this.initCodec.includes('vp8')) {
+                        console.log('Trying VP9 codec...');
+                        this.initCodec = 'video/webm; codecs="vp9"';
+                        this.initSourceBuffer();
+                    }
+                }
+            }
+
+            appendFromQueue() {
+                if (!this.sourceBuffer || this.isSourceBufferUpdating || this.chunkQueue.length === 0) {
+                    return;
+                }
+                
+                try {
+                    const chunk = this.chunkQueue.shift();
+                    this.isSourceBufferUpdating = true;
+                    this.sourceBuffer.appendBuffer(chunk);
+                } catch (e) {
+                    console.error('Error appending buffer:', e);
+                    this.isSourceBufferUpdating = false;
+                    // Attempt to recover from errors
+                    if (this.mediaSource.readyState === 'open') {
+                        this.sourceBuffer.abort();
+                    }
                 }
             }
             
@@ -253,66 +318,19 @@
                     this.dataReceived += data.byteLength || data.length;
                     this.updateStats();
                     
-                    // Add chunk to buffer
+                    // Convert to Uint8Array and queue
                     const uint8Array = new Uint8Array(data);
-                    this.videoChunks.push(uint8Array);
-                    
-                    // Process chunks more frequently for lower latency
-                    if (this.videoChunks.length >= 3) {
-                        this.processVideoChunks();
-                    }
+                    this.chunkQueue.push(uint8Array);
+                    this.appendFromQueue();
                     
                 } catch (error) {
                     console.error('Error handling video data:', error);
                 }
             }
             
-            processVideoChunks() {
-                if (this.videoChunks.length === 0) return;
-                
-                try {
-                    // Combine all chunks into a single buffer
-                    const totalLength = this.videoChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-                    const combinedBuffer = new Uint8Array(totalLength);
-                    
-                    let offset = 0;
-                    for (const chunk of this.videoChunks) {
-                        combinedBuffer.set(chunk, offset);
-                        offset += chunk.length;
-                    }
-                    
-                    // Create blob URL with WebM MIME type  
-                    const blob = new Blob([combinedBuffer], { 
-                        type: 'video/webm' // WebM MIME type for VP8
-                    });
-                    
-                    // Update video source
-                    const url = URL.createObjectURL(blob);
-                    
-                    // Clean up previous URL
-                    if (this.video.src && this.video.src.startsWith('blob:')) {
-                        URL.revokeObjectURL(this.video.src);
-                    }
-                    
-                    this.video.src = url;
-                    
-                    // Force immediate playback
-                    this.video.load();
-                    this.video.play().catch(e => {
-                        console.log('Auto-play prevented:', e);
-                    });
-                    
-                    // Keep only the last few chunks for continuity
-                    this.videoChunks = this.videoChunks.slice(-2);
-                    
-                } catch (error) {
-                    console.error('Error processing video chunks:', error);
-                }
-            }
-            
             updateStats() {
                 const now = Date.now();
-                if (now - this.lastStatsUpdate > 1000) { // Update every second
+                if (now - this.lastStatsUpdate > 1000) {
                     const elapsed = (now - this.startTime) / 1000;
                     const fps = this.frameCount / elapsed;
                     const dataRate = (this.dataReceived / elapsed / 1024).toFixed(1);
@@ -337,8 +355,9 @@
                     this.startTime = Date.now();
                     this.lastStatsUpdate = Date.now();
                     
-                    // Clear any existing video data
-                    this.videoChunks = [];
+                    // Reset MSE pipeline
+                    this.chunkQueue = [];
+                    this.setupMediaSource();
                     
                     // Request stream from server
                     this.socket.emit('start-stream', { 
@@ -351,7 +370,7 @@
                     const mode = ultraMode ? 'Ultra Low-Latency' : 'Low-Latency';
                     this.updateStatus(`${mode} stream requested`, 'connecting');
                     
-                    // Set a timeout to show "streaming" status
+                    // Set timeout to show streaming status
                     setTimeout(() => {
                         if (this.isStreaming) {
                             this.updateStatus(`${mode} streaming...`, 'connected');
@@ -372,12 +391,14 @@
                 try {
                     this.socket.emit('stop-stream');
                     
-                    // Clean up video
-                    if (this.video.src && this.video.src.startsWith('blob:')) {
-                        URL.revokeObjectURL(this.video.src);
+                    // Clean up media resources
+                    if (this.sourceBuffer) {
+                        this.sourceBuffer.abort();
                     }
-                    this.video.src = '';
-                    this.videoChunks = [];
+                    if (this.mediaSource && this.mediaSource.readyState === 'open') {
+                        this.mediaSource.endOfStream();
+                    }
+                    this.chunkQueue = [];
                     
                     this.isStreaming = false;
                     this.startBtn.disabled = false;
@@ -402,7 +423,15 @@
         
         // Initialize the client when the page loads
         document.addEventListener('DOMContentLoaded', () => {
-            new ZeroLatencyStreamClient();
+            const client = new ZeroLatencyStreamClient();
+            
+            // Handle autoplay restrictions
+            document.addEventListener('click', function initialInteraction() {
+                client.video.play().catch(e => {
+                    console.log('Autoplay prevented:', e);
+                });
+                document.removeEventListener('click', initialInteraction);
+            });
         });
     </script>
 </body>
