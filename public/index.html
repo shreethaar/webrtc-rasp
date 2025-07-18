@@ -147,11 +147,13 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        class WebRTCClient {
+        class VideoStreamClient {
             constructor() {
                 this.socket = io();
-                this.pc = null;
-                this.isConnected = false;
+                this.isStreaming = false;
+                this.videoChunks = [];
+                this.mediaSource = null;
+                this.sourceBuffer = null;
                 
                 // DOM elements
                 this.video = document.getElementById('remoteVideo');
@@ -159,15 +161,8 @@
                 this.stopBtn = document.getElementById('stopBtn');
                 this.status = document.getElementById('status');
                 
-                // WebRTC configuration
-                this.rtcConfig = {
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' }
-                    ]
-                };
-                
                 this.setupEventListeners();
+                this.initializeVideo();
             }
             
             setupEventListeners() {
@@ -187,12 +182,15 @@
                     this.stopStream();
                 });
                 
-                this.socket.on('answer', (answer) => {
-                    this.handleAnswer(answer);
+                this.socket.on('video-data', (data) => {
+                    this.handleVideoData(data);
                 });
                 
-                this.socket.on('ice-candidate', (candidate) => {
-                    this.handleIceCandidate(candidate);
+                this.socket.on('status', (status) => {
+                    console.log('Server status:', status);
+                    if (status.streaming) {
+                        this.updateStatus('Stream active', 'connected');
+                    }
                 });
                 
                 this.socket.on('error', (error) => {
@@ -201,57 +199,86 @@
                 });
             }
             
-            async startStream() {
+            initializeVideo() {
+                // Try to use MediaSource API for better streaming
+                if ('MediaSource' in window) {
+                    this.mediaSource = new MediaSource();
+                    this.video.src = URL.createObjectURL(this.mediaSource);
+                    
+                    this.mediaSource.addEventListener('sourceopen', () => {
+                        console.log('MediaSource opened');
+                        try {
+                            // Try WebM first, fallback to MP4
+                            const codec = 'video/webm; codecs="vp8"';
+                            if (MediaSource.isTypeSupported(codec)) {
+                                this.sourceBuffer = this.mediaSource.addSourceBuffer(codec);
+                                console.log('Using WebM codec');
+                            } else {
+                                console.log('WebM not supported, using fallback method');
+                                this.useFallbackMethod();
+                            }
+                        } catch (e) {
+                            console.error('Error setting up MediaSource:', e);
+                            this.useFallbackMethod();
+                        }
+                    });
+                } else {
+                    console.log('MediaSource not supported, using fallback method');
+                    this.useFallbackMethod();
+                }
+            }
+            
+            useFallbackMethod() {
+                // Fallback: Use blob URLs for streaming
+                this.mediaSource = null;
+                this.sourceBuffer = null;
+                console.log('Using blob URL fallback method');
+            }
+            
+            handleVideoData(data) {
                 try {
-                    this.updateStatus('Connecting...', 'connecting');
+                    if (this.sourceBuffer && !this.sourceBuffer.updating) {
+                        // Convert ArrayBuffer to Uint8Array if needed
+                        const uint8Array = new Uint8Array(data);
+                        this.sourceBuffer.appendBuffer(uint8Array);
+                    } else {
+                        // Fallback method: accumulate chunks and create blob URL
+                        this.videoChunks.push(new Uint8Array(data));
+                        
+                        // Create blob URL every few chunks to update video
+                        if (this.videoChunks.length > 10) {
+                            const blob = new Blob(this.videoChunks, { type: 'video/webm' });
+                            const url = URL.createObjectURL(blob);
+                            this.video.src = url;
+                            this.videoChunks = []; // Clear chunks
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error handling video data:', error);
+                }
+            }
+            
+            startStream() {
+                try {
+                    this.updateStatus('Starting stream...', 'connecting');
                     this.startBtn.disabled = true;
                     
-                    // Create peer connection
-                    this.pc = new RTCPeerConnection(this.rtcConfig);
+                    // Clear any existing video data
+                    this.videoChunks = [];
                     
-                    // Handle incoming stream
-                    this.pc.ontrack = (event) => {
-                        console.log('Received remote stream');
-                        this.video.srcObject = event.streams[0];
-                        this.updateStatus('Stream active', 'connected');
-                    };
+                    // Request stream from server
+                    this.socket.emit('start-stream');
                     
-                    // Handle ICE candidates
-                    this.pc.onicecandidate = (event) => {
-                        if (event.candidate) {
-                            this.socket.emit('ice-candidate', event.candidate);
+                    this.isStreaming = true;
+                    this.stopBtn.disabled = false;
+                    this.updateStatus('Stream requested', 'connecting');
+                    
+                    // Set a timeout to show "streaming" status
+                    setTimeout(() => {
+                        if (this.isStreaming) {
+                            this.updateStatus('Streaming...', 'connected');
                         }
-                    };
-                    
-                    // Handle connection state changes
-                    this.pc.onconnectionstatechange = () => {
-                        console.log('Connection state:', this.pc.connectionState);
-                        
-                        switch (this.pc.connectionState) {
-                            case 'connected':
-                                this.updateStatus('WebRTC connected', 'connected');
-                                this.isConnected = true;
-                                this.stopBtn.disabled = false;
-                                break;
-                            case 'disconnected':
-                            case 'failed':
-                                this.updateStatus('Connection failed', 'error');
-                                this.stopStream();
-                                break;
-                            case 'connecting':
-                                this.updateStatus('Establishing connection...', 'connecting');
-                                break;
-                        }
-                    };
-                    
-                    // Create offer
-                    const offer = await this.pc.createOffer({
-                        offerToReceiveVideo: true,
-                        offerToReceiveAudio: false
-                    });
-                    
-                    await this.pc.setLocalDescription(offer);
-                    this.socket.emit('offer', { offer });
+                    }, 2000);
                     
                 } catch (error) {
                     console.error('Error starting stream:', error);
@@ -260,41 +287,28 @@
                 }
             }
             
-            async handleAnswer(answer) {
-                try {
-                    await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
-                    console.log('Remote description set');
-                } catch (error) {
-                    console.error('Error setting remote description:', error);
-                    this.updateStatus('Connection error', 'error');
-                }
-            }
-            
-            async handleIceCandidate(candidate) {
-                try {
-                    await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
-                    console.log('ICE candidate added');
-                } catch (error) {
-                    console.error('Error adding ICE candidate:', error);
-                }
-            }
-            
             stopStream() {
-                if (this.pc) {
-                    this.pc.close();
-                    this.pc = null;
+                try {
+                    this.socket.emit('stop-stream');
+                    
+                    // Clear video
+                    this.video.src = '';
+                    this.videoChunks = [];
+                    
+                    // Reset MediaSource if using it
+                    if (this.mediaSource && this.mediaSource.readyState === 'open') {
+                        this.mediaSource.endOfStream();
+                    }
+                    
+                    this.isStreaming = false;
+                    this.startBtn.disabled = false;
+                    this.stopBtn.disabled = true;
+                    this.updateStatus('Stream stopped', 'disconnected');
+                    
+                    console.log('Stream stopped');
+                } catch (error) {
+                    console.error('Error stopping stream:', error);
                 }
-                
-                if (this.video.srcObject) {
-                    this.video.srcObject = null;
-                }
-                
-                this.isConnected = false;
-                this.startBtn.disabled = false;
-                this.stopBtn.disabled = true;
-                this.updateStatus('Disconnected', 'disconnected');
-                
-                console.log('Stream stopped');
             }
             
             updateStatus(message, type) {
@@ -303,9 +317,9 @@
             }
         }
         
-        // Initialize the WebRTC client when the page loads
+        // Initialize the client when the page loads
         document.addEventListener('DOMContentLoaded', () => {
-            new WebRTCClient();
+            new VideoStreamClient();
         });
     </script>
 </body>

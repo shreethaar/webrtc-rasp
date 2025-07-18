@@ -15,11 +15,7 @@ sudo apt-get update
 echo "🔧 Installing system dependencies..."
 sudo apt-get install -y \
     ffmpeg \
-    v4l-utils \
-    build-essential \
-    python3-dev \
-    libuv1-dev \
-    cmake
+    v4l-utils
 
 # Check if Node.js is installed
 if ! command -v node &> /dev/null; then
