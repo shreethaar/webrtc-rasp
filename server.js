@@ -30,8 +30,13 @@ function startCameraCapture() {
     }
 
     const command = `
-        libcamera-vid -t 0 --width 640 --height 480 --framerate 20 --inline -o - |
-        ffmpeg -i - -c:v libx264 -preset ultrafast -tune zerolatency -f mpegts -
+        libcamera-vid -t 0 --width 640 --height 480 --framerate 20 --inline --flush -o - |
+        ffmpeg -i - -c:v libx264 -preset ultrafast -tune zerolatency
+        -profile:v baseline -level 3.0 -pix_fmt yuv420p
+        -x264opts keyint=20:min-keyint=20:scenecut=0:bframes=0
+        -bufsize 64k -maxrate 1000k -g 20
+        -fflags nobuffer -flags low_delay -strict experimental
+        -f mpegts -`
     `;
 
     console.log('Starting camera capture with libcamera → ffmpeg pipeline');
