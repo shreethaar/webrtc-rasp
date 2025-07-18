@@ -29,9 +29,11 @@ function startCameraCapture() {
         ffmpegProcess.kill('SIGTERM');
     }
 
-    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush
-  --codec h264 --level 4.0 --bitrate 1000000 --intra 30
-  -o - | ffmpeg -i - -c:v copy -f mpegts -`;
+    const command = `
+        libcamera-vid -t 0 --width 640 --height 480 --framerate 20 --inline -o - |
+        ffmpeg -i - -c:v libvpx -b:v 1M -crf 10 -preset ultrafast -deadline realtime -cpu-used 8 -f webm -
+    `;  
+
     console.log('Starting camera capture with libcamera → ffmpeg pipeline');
 
     ffmpegProcess = spawn('bash', ['-c', command]);
