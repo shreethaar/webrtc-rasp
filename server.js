@@ -28,44 +28,29 @@ function startCameraCapture() {
     if (ffmpegProcess) {
         ffmpegProcess.kill('SIGTERM');
     }
-    
-    // FFmpeg command for Raspberry Pi camera to WebM stream
-    const ffmpegArgs = [
-        '-f', 'v4l2',
-        '-framerate', '20',
-        '-video_size', '640x480',
-        '-i', '/dev/video0',
-        '-c:v', 'libvpx',
-        '-b:v', '1M',
-        '-crf', '10',
-        '-preset', 'ultrafast',
-        '-deadline', 'realtime',
-        '-cpu-used', '8',
-        '-f', 'webm',
-        '-live', '1',
-        '-'
-    ];
-    
-    console.log('Starting camera capture with command:', 'ffmpeg', ffmpegArgs.join(' '));
-    
-    ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
-    
-    // Handle video data
+
+    const command = `
+        libcamera-vid -t 0 --width 640 --height 480 --framerate 20 --inline -o - |
+        ffmpeg -i - -c:v libvpx -b:v 1M -crf 10 -preset ultrafast -deadline realtime -cpu-used 8 -f webm -
+    `;
+
+    console.log('Starting camera capture with libcamera → ffmpeg pipeline');
+
+    ffmpegProcess = spawn('bash', ['-c', command]);
+
     ffmpegProcess.stdout.on('data', (data) => {
-        // Broadcast video data to all connected clients
         io.emit('video-data', data);
     });
-    
+
     ffmpegProcess.stderr.on('data', (data) => {
         const output = data.toString();
         if (output.includes('frame=') || output.includes('fps=')) {
-            // This is normal FFmpeg status output
             console.log('FFmpeg status:', output.trim());
         } else {
             console.log('FFmpeg:', output);
         }
     });
-    
+
     ffmpegProcess.on('close', (code) => {
         console.log(`FFmpeg process exited with code ${code}`);
         if (code !== 0 && code !== null) {
@@ -73,11 +58,11 @@ function startCameraCapture() {
             setTimeout(startCameraCapture, 5000);
         }
     });
-    
+
     ffmpegProcess.on('error', (error) => {
         console.error('FFmpeg error:', error);
     });
-    
+
     console.log('Camera capture started');
 }
 
