@@ -33,8 +33,8 @@ function startCameraCapture() {
         ffmpegProcess.kill('SIGTERM');
     }
 
-    // Optimized command for Pi Camera Module v2.1 with zero latency
-    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush --codec h264 --level 4.0 --bitrate 1500000 --intra 30 -o - | ffmpeg -i - -c:v copy -f mpegts -fflags nobuffer -flags low_delay -muxdelay 0 -`;
+    // Optimized WebM command for Pi Camera Module v2.1 with zero latency
+    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush -o - | ffmpeg -i - -c:v libvpx -b:v 1500k -crf 10 -preset ultrafast -deadline realtime -cpu-used 8 -g 30 -keyint_min 30 -fflags nobuffer -flags low_delay -f webm -`;
 
     console.log('Starting zero-latency camera capture with libcamera → ffmpeg pipeline');
 
@@ -76,8 +76,8 @@ function startUltraLowLatencyCapture() {
         ffmpegProcess.kill('SIGTERM');
     }
 
-    // I-frame only for absolute minimum latency
-    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush --codec h264 --level 4.0 --bitrate 3000000 --intra 1 -o - | ffmpeg -i - -c:v copy -f mpegts -fflags nobuffer -flags low_delay -muxdelay 0 -muxpreload 0 -`;
+    // Ultra-low latency WebM (I-frame only for absolute minimum latency)
+    const command = `libcamera-vid -t 0 --width 640 --height 480 --framerate 30 --inline --flush -o - | ffmpeg -i - -c:v libvpx -b:v 2500k -crf 4 -preset ultrafast -deadline realtime -cpu-used 8 -g 1 -keyint_min 1 -fflags nobuffer -flags low_delay -f webm -`;
 
     console.log('Starting ULTRA-low latency camera capture (I-frame only)');
 

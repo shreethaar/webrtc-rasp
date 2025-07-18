@@ -159,11 +159,11 @@
         <div class="info">
             <h3>📋 Zero-Latency Streaming:</h3>
             <ul>
-                <li><strong>Hardware H.264:</strong> Uses Pi Camera Module v2.1 hardware encoder</li>
-                <li><strong>No Transcoding:</strong> Direct H.264 stream, no CPU overhead</li>
-                <li><strong>Minimal Buffering:</strong> MPEG-TS format with immediate playback</li>
-                <li><strong>Ultra Mode:</strong> I-frame only for absolute minimum latency</li>
-                <li>Check browser console for detailed performance metrics</li>
+                <li><strong>Optimized WebM:</strong> Uses VP8 codec with ultra-fast encoding</li>
+                <li><strong>Minimal Buffering:</strong> Processes chunks every 3 frames</li>
+                <li><strong>Low Latency Flags:</strong> FFmpeg configured for real-time streaming</li>
+                <li><strong>Ultra Mode:</strong> I-frame only encoding for minimum latency</li>
+                <li>Pi Camera Module v2.1 optimized settings</li>
             </ul>
         </div>
     </div>
@@ -281,9 +281,9 @@
                         offset += chunk.length;
                     }
                     
-                    // Create blob URL with MPEG-TS MIME type
+                    // Create blob URL with WebM MIME type  
                     const blob = new Blob([combinedBuffer], { 
-                        type: 'video/mp2t' // MPEG-TS MIME type
+                        type: 'video/webm' // WebM MIME type for VP8
                     });
                     
                     // Update video source
