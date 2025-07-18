@@ -169,270 +169,249 @@
     </div>
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        class ZeroLatencyStreamClient {
-            constructor() {
-                this.socket = io();
-                this.isStreaming = false;
-                this.isUltraMode = false;
-                
-                // Performance tracking
-                this.frameCount = 0;
-                this.dataReceived = 0;
-                this.startTime = null;
-                this.lastStatsUpdate = Date.now();
-                
-                // DOM elements
-                this.video = document.getElementById('remoteVideo');
-                this.startBtn = document.getElementById('startBtn');
-                this.ultraBtn = document.getElementById('ultraBtn');
-                this.stopBtn = document.getElementById('stopBtn');
-                this.status = document.getElementById('status');
-                this.stats = document.getElementById('stats');
-                
-                // MSE setup
-                this.mediaSource = null;
-                this.sourceBuffer = null;
-                this.chunkQueue = [];
-                this.isSourceBufferUpdating = false;
-                this.initCodec = 'video/webm; codecs="vp8"';
-                
-                this.setupEventListeners();
-                this.initializeVideo();
+class ZeroLatencyStreamClient {
+    constructor() {
+        this.socket = io();
+        this.isStreaming = false;
+        this.isUltraMode = false;
+        
+        // DOM elements
+        this.video = document.getElementById('remoteVideo');
+        this.startBtn = document.getElementById('startBtn');
+        this.ultraBtn = document.getElementById('ultraBtn');
+        this.stopBtn = document.getElementById('stopBtn');
+        this.status = document.getElementById('status');
+        this.stats = document.getElementById('stats');
+        
+        // Video handling
+        this.mediaSource = null;
+        this.sourceBuffer = null;
+        this.videoBuffer = [];
+        this.isBufferUpdating = false;
+        this.codec = 'video/webm; codecs="vp8"'; // Default codec
+        
+        this.setupEventListeners();
+    }
+    
+    setupEventListeners() {
+        // Button event listeners
+        this.startBtn.addEventListener('click', () => this.startStream(false));
+        this.ultraBtn.addEventListener('click', () => this.startStream(true));
+        this.stopBtn.addEventListener('click', () => this.stopStream());
+        
+        // Socket event listeners
+        this.socket.on('connect', () => {
+            console.log('Connected to server');
+            this.updateStatus('Connected to server', 'connected');
+        });
+        
+        this.socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            this.updateStatus('Disconnected from server', 'disconnected');
+            this.stopStream();
+        });
+        
+        this.socket.on('video-data', (data) => {
+            this.handleVideoData(data);
+        });
+        
+        this.socket.on('status', (status) => {
+            if (status.streaming) {
+                this.updateStatus('Stream active', 'connected');
             }
-            
-            setupEventListeners() {
-                // Button event listeners
-                this.startBtn.addEventListener('click', () => this.startStream(false));
-                this.ultraBtn.addEventListener('click', () => this.startStream(true));
-                this.stopBtn.addEventListener('click', () => this.stopStream());
-                
-                // Socket event listeners
-                this.socket.on('connect', () => {
-                    console.log('Connected to server');
-                    this.updateStatus('Connected to server', 'connected');
-                });
-                
-                this.socket.on('disconnect', () => {
-                    console.log('Disconnected from server');
-                    this.updateStatus('Disconnected from server', 'disconnected');
-                    this.stopStream();
-                });
-                
-                this.socket.on('video-data', (data) => {
-                    this.handleVideoData(data);
-                });
-                
-                this.socket.on('status', (status) => {
-                    console.log('Server status:', status);
-                    if (status.streaming) {
-                        this.updateStatus('Stream active', 'connected');
-                    }
-                });
-                
-                this.socket.on('error', (error) => {
-                    console.error('Server error:', error);
-                    this.updateStatus('Error: ' + error, 'error');
-                });
-            }
-            
-            initializeVideo() {
-                // Configure video element for zero-latency playback
-                this.video.controls = false;
-                this.video.muted = true;
-                this.video.playsInline = true;
-                this.video.autoplay = true;
-                
-                // Create MediaSource and attach to video element
-                this.setupMediaSource();
-            }
-
-            setupMediaSource() {
-                // Clean up existing MediaSource if any
-                if (this.mediaSource) {
-                    if (this.mediaSource.readyState === 'open') {
-                        this.mediaSource.endOfStream();
-                    }
-                    URL.revokeObjectURL(this.video.src);
-                }
-
-                this.mediaSource = new MediaSource();
-                this.mediaSource.addEventListener('sourceopen', this.initSourceBuffer.bind(this));
-                
-                const objectURL = URL.createObjectURL(this.mediaSource);
-                this.video.src = objectURL;
-            }
-
-            initSourceBuffer() {
-                try {
-                    // Create source buffer with proper codec
-                    this.sourceBuffer = this.mediaSource.addSourceBuffer(this.initCodec);
-                    this.sourceBuffer.mode = 'sequence';
-                    
-                    this.sourceBuffer.addEventListener('updateend', () => {
-                        this.isSourceBufferUpdating = false;
-                        this.appendFromQueue();
-                    });
-                    
-                    this.sourceBuffer.addEventListener('error', (e) => {
-                        console.error('SourceBuffer error:', e);
-                        this.isSourceBufferUpdating = false;
-                    });
-                    
-                    console.log('SourceBuffer ready');
-                    this.appendFromQueue();
-                    
-                } catch (e) {
-                    console.error('Error creating SourceBuffer:', e);
-                    // Fallback to VP9 if VP8 fails
-                    if (this.initCodec.includes('vp8')) {
-                        console.log('Trying VP9 codec...');
-                        this.initCodec = 'video/webm; codecs="vp9"';
-                        this.initSourceBuffer();
-                    }
-                }
-            }
-
-            appendFromQueue() {
-                if (!this.sourceBuffer || this.isSourceBufferUpdating || this.chunkQueue.length === 0) {
-                    return;
-                }
-                
-                try {
-                    const chunk = this.chunkQueue.shift();
-                    this.isSourceBufferUpdating = true;
-                    this.sourceBuffer.appendBuffer(chunk);
-                } catch (e) {
-                    console.error('Error appending buffer:', e);
-                    this.isSourceBufferUpdating = false;
-                    // Attempt to recover from errors
-                    if (this.mediaSource.readyState === 'open') {
-                        this.sourceBuffer.abort();
-                    }
-                }
-            }
-            
-            handleVideoData(data) {
-                try {
-                    // Performance tracking
-                    this.frameCount++;
-                    this.dataReceived += data.byteLength || data.length;
-                    this.updateStats();
-                    
-                    // Convert to Uint8Array and queue
-                    const uint8Array = new Uint8Array(data);
-                    this.chunkQueue.push(uint8Array);
-                    this.appendFromQueue();
-                    
-                } catch (error) {
-                    console.error('Error handling video data:', error);
-                }
-            }
-            
-            updateStats() {
-                const now = Date.now();
-                if (now - this.lastStatsUpdate > 1000) {
-                    const elapsed = (now - this.startTime) / 1000;
-                    const fps = this.frameCount / elapsed;
-                    const dataRate = (this.dataReceived / elapsed / 1024).toFixed(1);
-                    
-                    this.stats.textContent = 
-                        `Frames: ${this.frameCount} | Data Rate: ${dataRate} KB/s | FPS: ${fps.toFixed(1)}`;
-                    
-                    this.lastStatsUpdate = now;
-                }
-            }
-            
-            startStream(ultraMode = false) {
-                try {
-                    this.updateStatus('Starting stream...', 'connecting');
-                    this.startBtn.disabled = true;
-                    this.ultraBtn.disabled = true;
-                    this.isUltraMode = ultraMode;
-                    
-                    // Reset performance tracking
-                    this.frameCount = 0;
-                    this.dataReceived = 0;
-                    this.startTime = Date.now();
-                    this.lastStatsUpdate = Date.now();
-                    
-                    // Reset MSE pipeline
-                    this.chunkQueue = [];
-                    this.setupMediaSource();
-                    
-                    // Request stream from server
-                    this.socket.emit('start-stream', { 
-                        ultraLowLatency: ultraMode 
-                    });
-                    
-                    this.isStreaming = true;
-                    this.stopBtn.disabled = false;
-                    
-                    const mode = ultraMode ? 'Ultra Low-Latency' : 'Low-Latency';
-                    this.updateStatus(`${mode} stream requested`, 'connecting');
-                    
-                    // Set timeout to show streaming status
-                    setTimeout(() => {
-                        if (this.isStreaming) {
-                            this.updateStatus(`${mode} streaming...`, 'connected');
-                        }
-                    }, 1000);
-                    
-                    console.log(`Starting ${mode} stream`);
-                    
-                } catch (error) {
-                    console.error('Error starting stream:', error);
-                    this.updateStatus('Failed to start stream: ' + error.message, 'error');
-                    this.startBtn.disabled = false;
-                    this.ultraBtn.disabled = false;
-                }
-            }
-            
-            stopStream() {
-                try {
-                    this.socket.emit('stop-stream');
-                    
-                    // Clean up media resources
-                    if (this.sourceBuffer) {
-                        this.sourceBuffer.abort();
-                    }
-                    if (this.mediaSource && this.mediaSource.readyState === 'open') {
-                        this.mediaSource.endOfStream();
-                    }
-                    this.chunkQueue = [];
-                    
-                    this.isStreaming = false;
-                    this.startBtn.disabled = false;
-                    this.ultraBtn.disabled = false;
-                    this.stopBtn.disabled = true;
-                    this.updateStatus('Stream stopped', 'disconnected');
-                    
-                    // Reset stats
-                    this.stats.textContent = 'Frames: 0 | Data Rate: 0 KB/s | Latency: N/A';
-                    
-                    console.log('Stream stopped');
-                } catch (error) {
-                    console.error('Error stopping stream:', error);
-                }
-            }
-            
-            updateStatus(message, type) {
-                this.status.textContent = message;
-                this.status.className = `status ${type}`;
-            }
+        });
+        
+        this.socket.on('error', (error) => {
+            console.error('Server error:', error);
+            this.updateStatus('Error: ' + error, 'error');
+        });
+    }
+    
+    initMediaSource() {
+        // Clean up existing resources
+        if (this.mediaSource) {
+            this.mediaSource.endOfStream();
+            URL.revokeObjectURL(this.video.src);
         }
         
-        // Initialize the client when the page loads
-        document.addEventListener('DOMContentLoaded', () => {
-            const client = new ZeroLatencyStreamClient();
-            
-            // Handle autoplay restrictions
-            document.addEventListener('click', function initialInteraction() {
-                client.video.play().catch(e => {
-                    console.log('Autoplay prevented:', e);
-                });
-                document.removeEventListener('click', initialInteraction);
+        // Create new MediaSource
+        this.mediaSource = new MediaSource();
+        this.mediaSource.addEventListener('sourceopen', this.initSourceBuffer.bind(this));
+        
+        // Create object URL and set as video source
+        const url = URL.createObjectURL(this.mediaSource);
+        this.video.src = url;
+    }
+    
+    initSourceBuffer() {
+        try {
+            // Create source buffer
+            this.sourceBuffer = this.mediaSource.addSourceBuffer(this.codec);
+            this.sourceBuffer.mode = 'sequence';
+            this.sourceBuffer.addEventListener('updateend', () => {
+                this.isBufferUpdating = false;
+                this.processBufferQueue();
             });
+            
+            this.sourceBuffer.addEventListener('error', (e) => {
+                console.error('SourceBuffer error:', e);
+                this.isBufferUpdating = false;
+                this.tryFallbackCodec();
+            });
+            
+            console.log('SourceBuffer initialized');
+            this.processBufferQueue();
+            
+        } catch (e) {
+            console.error('Error creating SourceBuffer:', e);
+            this.tryFallbackCodec();
+        }
+    }
+    
+    tryFallbackCodec() {
+        // Try VP9 if VP8 fails
+        if (this.codec.includes('vp8')) {
+            console.log('Trying VP9 codec...');
+            this.codec = 'video/webm; codecs="vp9"';
+            this.initMediaSource();
+        } else {
+            console.error('No supported codec found');
+            this.updateStatus('Browser does not support required video formats', 'error');
+        }
+    }
+    
+    handleVideoData(data) {
+        if (!this.sourceBuffer) return;
+        
+        try {
+            // Convert to Uint8Array
+            const uint8Array = new Uint8Array(data);
+            
+            // Add to buffer queue
+            this.videoBuffer.push(uint8Array);
+            
+            // Process queue
+            this.processBufferQueue();
+            
+        } catch (error) {
+            console.error('Error handling video data:', error);
+        }
+    }
+    
+    processBufferQueue() {
+        if (!this.sourceBuffer || this.isBufferUpdating || this.videoBuffer.length === 0) {
+            return;
+        }
+        
+        try {
+            this.isBufferUpdating = true;
+            const chunk = this.videoBuffer.shift();
+            this.sourceBuffer.appendBuffer(chunk);
+        } catch (e) {
+            console.error('Error appending buffer:', e);
+            this.isBufferUpdating = false;
+        }
+    }
+    
+    startStream(ultraMode = false) {
+        this.updateStatus('Starting stream...', 'connecting');
+        this.startBtn.disabled = true;
+        this.ultraBtn.disabled = true;
+        this.isUltraMode = ultraMode;
+        
+        // Reset video buffer
+        this.videoBuffer = [];
+        
+        // Initialize media source
+        this.initMediaSource();
+        
+        // Request stream from server
+        this.socket.emit('start-stream', { 
+            ultraLowLatency: ultraMode 
         });
-    </script>
-</body>
+        
+        this.isStreaming = true;
+        this.stopBtn.disabled = false;
+        
+        const mode = ultraMode ? 'Ultra Low-Latency' : 'Low-Latency';
+        this.updateStatus(`${mode} stream requested`, 'connecting');
+        
+        // Set timeout to show streaming status
+        setTimeout(() => {
+            if (this.isStreaming) {
+                this.updateStatus(`${mode} streaming...`, 'connected');
+            }
+        }, 1000);
+        
+        // Start video playback
+        this.playVideo();
+    }
+    
+    playVideo() {
+        // Handle autoplay restrictions
+        const playPromise = this.video.play();
+        
+        if (playPromise !== undefined) {
+            playPromise.catch(error => {
+                console.log('Autoplay prevented:', error);
+                // Show play button overlay
+                this.showPlayButton();
+            });
+        }
+    }
+    
+    showPlayButton() {
+        const playOverlay = document.createElement('div');
+        playOverlay.style.position = 'absolute';
+        playOverlay.style.top = '0';
+        playOverlay.style.left = '0';
+        playOverlay.style.width = '100%';
+        playOverlay.style.height = '100%';
+        playOverlay.style.backgroundColor = 'rgba(0,0,0,0.5)';
+        playOverlay.style.display = 'flex';
+        playOverlay.style.alignItems = 'center';
+        playOverlay.style.justifyContent = 'center';
+        playOverlay.style.cursor = 'pointer';
+        playOverlay.innerHTML = '<button style="padding: 15px 30px; font-size: 18px;">Click to Play</button>';
+        
+        playOverlay.addEventListener('click', () => {
+            this.video.play().catch(e => console.log('Play failed:', e));
+            playOverlay.remove();
+        });
+        
+        document.querySelector('.video-container').appendChild(playOverlay);
+    }
+    
+    stopStream() {
+        this.socket.emit('stop-stream');
+        
+        // Clean up resources
+        if (this.sourceBuffer) {
+            this.sourceBuffer.abort();
+        }
+        if (this.mediaSource && this.mediaSource.readyState === 'open') {
+            this.mediaSource.endOfStream();
+        }
+        
+        this.isStreaming = false;
+        this.startBtn.disabled = false;
+        this.ultraBtn.disabled = false;
+        this.stopBtn.disabled = true;
+        this.updateStatus('Stream stopped', 'disconnected');
+        
+        console.log('Stream stopped');
+    }
+    
+    updateStatus(message, type) {
+        this.status.textContent = message;
+        this.status.className = `status ${type}`;
+    }
+}
+
+// Initialize the client when the page loads
+document.addEventListener('DOMContentLoaded', () => {
+    window.client = new ZeroLatencyStreamClient();
+});
+</script>
+    </body>
 </html>
